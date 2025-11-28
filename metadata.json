@@ -1,0 +1,7 @@
+{
+  "name": "Privet AI - Russian Tutor",
+  "description": "A real-time voice-based Russian language tutor powered by Gemini Live API. Practice pronunciation and conversation naturally.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
