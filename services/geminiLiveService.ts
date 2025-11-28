@@ -12,7 +12,7 @@ export class GeminiLiveService {
   private nextStartTime = 0;
   private sources = new Set<AudioBufferSourceNode>();
   private stream: MediaStream | null = null;
-  private processor: ScriptProcessorNode | null = null;
+  private processor: AudioWorkletNode | null = null;
   private sourceNode: MediaStreamAudioSourceNode | null = null;
   private session: any = null;
   private volumeInterval: number | null = null;
@@ -107,33 +107,39 @@ export class GeminiLiveService {
     }, 50); // 20fps updates
   }
 
-  private startAudioInput(sessionPromise: Promise<any>) {
+  private async startAudioInput(sessionPromise: Promise<any>) {
     if (!this.inputAudioContext || !this.stream) return;
 
-    this.sourceNode = this.inputAudioContext.createMediaStreamSource(this.stream);
-    this.processor = this.inputAudioContext.createScriptProcessor(4096, 1, 1);
+    try {
+      // Load AudioWorklet module
+      await this.inputAudioContext.audioWorklet.addModule(
+        new URL('../utils/audioProcessor.worklet.ts', import.meta.url).href
+      );
 
-    this.processor.onaudioprocess = (e) => {
-      const inputData = e.inputBuffer.getChannelData(0);
-      
-      // Calculate input volume
-      let sum = 0;
-      for (let i = 0; i < inputData.length; i++) {
-        sum += inputData[i] * inputData[i];
-      }
-      this.currentInputVolume = Math.sqrt(sum / inputData.length);
+      this.sourceNode = this.inputAudioContext.createMediaStreamSource(this.stream);
+      this.processor = new AudioWorkletNode(this.inputAudioContext, 'audio-capture-processor');
 
-      const pcmBlob = createBlob(inputData);
-      
-      sessionPromise.then((session) => {
-        session.sendRealtimeInput({ media: pcmBlob });
-      }).catch(err => {
-        console.error("Error sending audio input:", err);
-      });
-    };
+      // Handle messages from AudioWorklet
+      this.processor.port.onmessage = (event) => {
+        const { audioData, volume } = event.data;
+        
+        // Update current input volume
+        this.currentInputVolume = volume;
 
-    this.sourceNode.connect(this.processor);
-    this.processor.connect(this.inputAudioContext.destination);
+        const pcmBlob = createBlob(audioData);
+        
+        sessionPromise.then((session) => {
+          session.sendRealtimeInput({ media: pcmBlob });
+        }).catch(err => {
+          console.error("Error sending audio input:", err);
+        });
+      };
+
+      this.sourceNode.connect(this.processor);
+      this.processor.connect(this.inputAudioContext.destination);
+    } catch (error) {
+      console.error("Error setting up AudioWorklet:", error);
+    }
   }
 
   private async handleServerMessage(message: LiveServerMessage) {
@@ -198,8 +204,8 @@ export class GeminiLiveService {
     }
 
     if (this.processor) {
+      this.processor.port.onmessage = null;
       this.processor.disconnect();
-      this.processor.onaudioprocess = null;
     }
     if (this.sourceNode) {
       this.sourceNode.disconnect();
